@@ -60,7 +60,7 @@ import { SceneBase } from './scene-base';
 export const bypassLogin = import.meta.env.VITE_BYPASS_LOGIN === "1";
 
 export const SEED_OVERRIDE = '';
-export const STARTER_SPECIES_OVERRIDE = Species.ZAPDOS;
+export const STARTER_SPECIES_OVERRIDE = 0;
 export const STARTER_FORM_OVERRIDE = 0;
 export const STARTING_LEVEL_OVERRIDE = 0;
 export const STARTING_WAVE_OVERRIDE = 0;
@@ -68,17 +68,17 @@ export const STARTING_BIOME_OVERRIDE = Biome.TOWN;
 export const STARTING_MONEY_OVERRIDE = 0;
 
 export const ABILITY_OVERRIDE = Abilities.NONE;
-export const MOVE_OVERRIDE = Moves.ROOST;
-export const OPP_SPECIES_OVERRIDE = Species.EXCADRILL;
+export const MOVE_OVERRIDE = Moves.NONE;
+export const OPP_SPECIES_OVERRIDE = 0;
 export const OPP_ABILITY_OVERRIDE = Abilities.NONE;
-export const OPP_MOVE_OVERRIDE = Moves.THUNDER_PUNCH;
+export const OPP_MOVE_OVERRIDE = Moves.NONE;
 
 const DEBUG_RNG = false;
 
 export const startingWave = STARTING_WAVE_OVERRIDE || 1;
 
 const expSpriteKeys: string[] = [];
-const repeatInputDelay = 250; // milliseconds
+const repeatInputDelayMillis = 250;
 
 export enum Button {
 	UP,
@@ -184,10 +184,10 @@ export default class BattleScene extends SceneBase {
 	private playTimeTimer: Phaser.Time.TimerEvent;
 	
 	private buttonKeys: Phaser.Input.Keyboard.Key[][];
-
-	private blockInput: boolean;
-	private inputBlockedTime: number;
-	private buttonBlockingInput: number;
+	private lastProcessedButtonPressTimes: Map<Button, number> = new Map();
+	// movementButtonLock ensures only a single movement key is firing repeated inputs
+	// (i.e. by holding down a button) at a time.
+	private movementButtonLock: Button;
 
 	public rngCounter: integer = 0;
 	public rngSeedOverride: string = '';
@@ -1065,44 +1065,31 @@ export default class BattleScene extends SceneBase {
 	}
 
 	checkInput(): boolean {
-		if (this.blockInput) {
-			if (this.isButtonDepressed(this.buttonBlockingInput)) {
-				this.blockInput = false;
-			} else if (this.time.now - this.inputBlockedTime >= repeatInputDelay)
-				this.blockInput = false;
-			else
-				return false;
-		}
-
 		let inputSuccess = false;
-		let pressedButton = -1;
 		let vibrationLength = 0;
-		if (this.isButtonPressed(Button.UP)) {
+		if (this.buttonJustPressed(Button.UP) || this.repeatInputDurationJustPassed(Button.UP)) {
 			inputSuccess = this.ui.processInput(Button.UP);
-			pressedButton = Button.UP;
 			vibrationLength = 5;
-		} else if (this.isButtonPressed(Button.DOWN)) {
+			this.setLastProcessedMovementTime(Button.UP)
+		} else if (this.buttonJustPressed(Button.DOWN) || this.repeatInputDurationJustPassed(Button.DOWN)) {
 			inputSuccess = this.ui.processInput(Button.DOWN);
-			pressedButton = Button.DOWN;
 			vibrationLength = 5;
-		} else if (this.isButtonPressed(Button.LEFT)) {
+			this.setLastProcessedMovementTime(Button.DOWN)
+		} else if (this.buttonJustPressed(Button.LEFT) || this.repeatInputDurationJustPassed(Button.LEFT)) {
 			inputSuccess = this.ui.processInput(Button.LEFT);
-			pressedButton = Button.LEFT;
 			vibrationLength = 5;
-		} else if (this.isButtonPressed(Button.RIGHT)) {
+			this.setLastProcessedMovementTime(Button.LEFT)
+		} else if (this.buttonJustPressed(Button.RIGHT) || this.repeatInputDurationJustPassed(Button.RIGHT)) {
 			inputSuccess = this.ui.processInput(Button.RIGHT);
-			pressedButton = Button.RIGHT;
 			vibrationLength = 5;
-		} else if (this.isButtonPressed(Button.SUBMIT)) {
+			this.setLastProcessedMovementTime(Button.RIGHT)
+		} else if (this.buttonJustPressed(Button.SUBMIT)) {
 			inputSuccess = this.ui.processInput(Button.SUBMIT) || this.ui.processInput(Button.ACTION);
-			pressedButton = Button.SUBMIT;
-		} else if (this.isButtonPressed(Button.ACTION)) {
+		} else if (this.buttonJustPressed(Button.ACTION)) {
 			inputSuccess = this.ui.processInput(Button.ACTION);
-			pressedButton = Button.ACTION;
-		} else if (this.isButtonPressed(Button.CANCEL)) {
+		} else if (this.buttonJustPressed(Button.CANCEL)) {
 			inputSuccess = this.ui.processInput(Button.CANCEL);
-			pressedButton = Button.CANCEL;
-		} else if (this.isButtonPressed(Button.MENU)) {
+		} else if (this.buttonJustPressed(Button.MENU)) {
 			switch (this.ui?.getMode()) {
 				case Mode.MESSAGE:
 					if (!(this.ui.getHandler() as MessageUiHandler).pendingPrompt)
@@ -1121,7 +1108,6 @@ export default class BattleScene extends SceneBase {
 				case Mode.OPTION_SELECT:
 					this.ui.setOverlayMode(Mode.MENU);
 					inputSuccess = true;
-					pressedButton = Button.MENU;
 					break;
 				case Mode.MENU:
 				case Mode.SETTINGS:
@@ -1129,62 +1115,66 @@ export default class BattleScene extends SceneBase {
 					this.ui.revertMode();
 					this.playSound('select');
 					inputSuccess = true;
-					pressedButton = Button.MENU;
 					break;
 				default:
 					return;
 			}
 		} else if (this.ui?.getHandler() instanceof StarterSelectUiHandler) {
-			if (this.isButtonPressed(Button.CYCLE_SHINY)) {
+			if (this.buttonJustPressed(Button.CYCLE_SHINY)) {
 				inputSuccess = this.ui.processInput(Button.CYCLE_SHINY);
-				pressedButton = Button.CYCLE_SHINY;
-			} else if (this.isButtonPressed(Button.CYCLE_FORM)) {
+			} else if (this.buttonJustPressed(Button.CYCLE_FORM)) {
 				inputSuccess = this.ui.processInput(Button.CYCLE_FORM);
-				pressedButton = Button.CYCLE_FORM;
-			} else if (this.isButtonPressed(Button.CYCLE_GENDER)) {
+			} else if (this.buttonJustPressed(Button.CYCLE_GENDER)) {
 				inputSuccess = this.ui.processInput(Button.CYCLE_GENDER);
-				pressedButton = Button.CYCLE_GENDER;
-			} else if (this.isButtonPressed(Button.CYCLE_ABILITY)) {
+			} else if (this.buttonJustPressed(Button.CYCLE_ABILITY)) {
 				inputSuccess = this.ui.processInput(Button.CYCLE_ABILITY);
-				pressedButton = Button.CYCLE_ABILITY;
-			} else if (this.isButtonPressed(Button.CYCLE_NATURE)) {
+			} else if (this.buttonJustPressed(Button.CYCLE_NATURE)) {
 				inputSuccess = this.ui.processInput(Button.CYCLE_NATURE);
-				pressedButton = Button.CYCLE_NATURE;
 			} else
 				return;
-		}	else if (this.isButtonPressed(Button.SPEED_UP)) {
+		}	else if (this.buttonJustPressed(Button.SPEED_UP)) {
 			if (this.gameSpeed < 5) {
 				this.gameData.saveSetting(Setting.Game_Speed, settingOptions[Setting.Game_Speed].indexOf(`${this.gameSpeed}x`) + 1);
 				if (this.ui?.getMode() === Mode.SETTINGS)
 					(this.ui.getHandler() as SettingsUiHandler).show([]);
-				inputSuccess = true
-				pressedButton = Button.SPEED_UP;
 			}
-		} else if (this.isButtonPressed(Button.SLOW_DOWN)) {
+		} else if (this.buttonJustPressed(Button.SLOW_DOWN)) {
 			if (this.gameSpeed > 1) {
 				this.gameData.saveSetting(Setting.Game_Speed, Math.max(settingOptions[Setting.Game_Speed].indexOf(`${this.gameSpeed}x`) - 1, 0));
 				if (this.ui?.getMode() === Mode.SETTINGS)
 					(this.ui.getHandler() as SettingsUiHandler).show([]);
-				inputSuccess = true;
-				pressedButton = Button.SLOW_DOWN;
 			}
 		} else
 			return;
 		if (inputSuccess && this.enableVibration && typeof navigator.vibrate !== 'undefined')
-			navigator.vibrate(vibrationLength || 10);
-		
-		// Block input for a short time to prevent accidental double inputs
-		this.blockInput = true;
-		this.inputBlockedTime = this.time.now;
-		this.buttonBlockingInput = pressedButton;
+			navigator.vibrate(vibrationLength || 10);		
 	}
 
-	isButtonPressed(button: Button): boolean {
-		return this.buttonKeys[button].filter(k => k.isDown).length >= 1;
+	buttonJustPressed(button: Button): boolean {
+		return this.buttonKeys[button].some(k => Phaser.Input.Keyboard.JustDown(k));
 	}
 
-	isButtonDepressed(button: Button): boolean {
-		return this.buttonKeys[button].filter(k => k.isUp).length == this.buttonKeys[button].length;
+	/**
+	 * repeatInputDurationJustPassed returns true if @param button has been held down long
+	 * enough to fire a repeated input. A button must claim the movementButtonLock before
+	 * firing a repeated input - this is to prevent multiple buttons from firing repeatedly.
+	 */
+	repeatInputDurationJustPassed(button: Button): boolean {
+		if (this.movementButtonLock !== null && this.movementButtonLock !== button) {
+			return false;
+		}
+		if (this.buttonKeys[button].every(k => k.isUp)) {
+			this.movementButtonLock = null;
+			return false;
+		}
+		if (this.time.now - this.lastProcessedButtonPressTimes.get(button) >= repeatInputDelayMillis) {
+			return true;
+		}
+	}
+
+	setLastProcessedMovementTime(button: Button) {
+		this.lastProcessedButtonPressTimes.set(button, this.time.now);
+		this.movementButtonLock = button;
 	}
 
 	isBgmPlaying(): boolean {
